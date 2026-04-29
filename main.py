@@ -10,6 +10,9 @@ import os
 import re
 import sys
 import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from html import escape
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -29,9 +32,9 @@ CONFIG = {
     "time_period": os.getenv("BMS_TIME", ""),      # e.g. "evening,night", empty = all
 }
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+GMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 RESEND_TO_EMAIL = os.getenv("RESEND_TO_EMAIL", "")
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "aviiciii@resend.dev")
 
 STATE_FILE = "bms_state.json"
 
@@ -72,7 +75,7 @@ REGION_MAP = {
 }
 
 
-# ─────────────────────────────────────���────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
 # DATA
 # ──────────────────────────────────────────────────────────────────────
 @dataclass
@@ -276,17 +279,12 @@ def filter_shows(shows, theatre_filter, time_periods, date_codes):
                     if d.strip()) if date_codes else set()
 
     for s in shows:
-        # Theatre filter
         if kws:
             name_lower = s.venue_name.lower()
             if not any(k in name_lower for k in kws):
                 continue
-
-        # Date filter
         if dates_set and s.date_code and s.date_code not in dates_set:
             continue
-
-        # Time period filter
         if periods:
             try:
                 tc = int(s.time_code)
@@ -301,13 +299,12 @@ def filter_shows(shows, theatre_filter, time_periods, date_codes):
                         break
             if not matched:
                 continue
-
         result.append(s)
     return result
 
 
 # ──────────────────────────────────────────────────────────────────────
-# STATE (for change detection between runs)
+# STATE
 # ──────────────────────────────────────────────────────────────────────
 def load_state():
     try:
@@ -323,7 +320,6 @@ def save_state(state):
 
 
 def build_state(shows, dates):
-    """Build a comparable state dict."""
     show_state = {}
     for s in shows:
         for c in s.categories:
@@ -336,149 +332,61 @@ def build_state(shows, dates):
                 "price": c.price,
                 "status": c.status,
             }
-
-    date_state = {
-        d.date_code: d.status for d in dates
-    }
-
+    date_state = {d.date_code: d.status for d in dates}
     return {"shows": show_state, "dates": date_state}
 
 
 def detect_changes(old_state, new_state):
     changes = []
-
-    # New dates opening
     old_dates = old_state.get("dates", {})
     new_dates = new_state.get("dates", {})
     for dc, status in new_dates.items():
         old_status = old_dates.get(dc)
-        if (old_status == "NOT_OPEN"
-                and status in ("BOOKABLE", "AVAILABLE")):
+        if old_status == "NOT_OPEN" and status in ("BOOKABLE", "AVAILABLE"):
             changes.append(f"📅 NEW DATE OPENED: {dc}")
 
     old_shows = old_state.get("shows", {})
     new_shows = new_state.get("shows", {})
-
-    # New showtimes
     for key in set(new_shows) - set(old_shows):
         s = new_shows[key]
         changes.append(
             f"🆕 NEW: {s['venue']} {s['time']} [{s['date']}] "
             f"— {s['cat']} ₹{s['price']}"
         )
-
-    # Sold out → available
     for key, new_s in new_shows.items():
         old_s = old_shows.get(key)
         if old_s and old_s["status"] == "0" and new_s["status"] != "0":
-            lbl, ico = AVAIL_STATUS_MAP.get(
-                new_s["status"], ("UNKNOWN", "⚪")
-            )
+            lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("UNKNOWN", "⚪"))
             changes.append(
                 f"{ico} BACK: {new_s['venue']} {new_s['time']} "
                 f"[{new_s['date']}] — {new_s['cat']} → {lbl}"
             )
-
     return changes
 
 
 # ──────────────────────────────────────────────────────────────────────
-# EMAIL NOTIFICATION (Resend)
+# EMAIL — Gmail SMTP
 # ──────────────────────────────────────────────────────────────────────
 def _cat_status_label(status):
     return AVAIL_STATUS_MAP.get(status, ("UNKNOWN", ""))[0]
 
 
 def send_email(subject, changes, shows, movie_info):
-    api_key = RESEND_API_KEY.strip()
+    gmail_user = GMAIL_USER.strip()
+    gmail_password = GMAIL_APP_PASSWORD.strip()
     to = RESEND_TO_EMAIL.strip()
-    frm = RESEND_FROM_EMAIL.strip() or "onboarding@resend.dev"
 
-    if not api_key or not to:
-        print("  ⚠️  Skipping email — RESEND_API_KEY or RESEND_TO_EMAIL not set.")
+    if not gmail_user or not gmail_password or not to:
+        print("  ⚠️  Skipping email — GMAIL_USER, GMAIL_APP_PASSWORD or RESEND_TO_EMAIL not set.")
         return
 
     now_str = datetime.now().strftime("%d %b %Y, %I:%M %p")
     movie_name = movie_info.get("name", "Movie")
 
-    # Build changes HTML
-    changes_html = ""
-    if changes:
-        rows = "".join(
-            f'<li style="padding:3px 0;font-size:14px;">{escape(c)}</li>'
-            for c in changes
-        )
-        changes_html = f"""
-        <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:bold;color:#333;">
-            Changes Detected
-        </h3>
-        <ul style="margin:0 0 20px 0;padding-left:20px;line-height:1.6;color:#333;">
-            {rows}
-        </ul>"""
-
-    # Build shows section grouped by venue
     venue_groups = {}
     for s in shows:
         venue_groups.setdefault(s.venue_name, []).append(s)
 
-    shows_html = ""
-    for vname, vshows in venue_groups.items():
-        show_rows = ""
-        for s in vshows:
-            cats = " | ".join(
-                f"{escape(c.name)} Rs.{escape(c.price)} ({_cat_status_label(c.status)})"
-                for c in s.categories
-            )
-            fmt = f" [{escape(s.screen_attr)}]" if s.screen_attr else ""
-            show_rows += (
-                f'<tr>'
-                f'<td style="padding:5px 8px;border-bottom:1px solid #ddd;'
-                f'font-size:13px;vertical-align:top;">'
-                f'{escape(s.time)}{fmt}</td>'
-                f'<td style="padding:5px 8px;border-bottom:1px solid #ddd;'
-                f'font-size:13px;vertical-align:top;">'
-                f'{cats}</td>'
-                f'</tr>'
-            )
-
-        shows_html += f"""
-        <p style="margin:14px 0 4px 0;font-size:14px;font-weight:bold;color:#333;">
-            {escape(vname)}
-        </p>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <tr style="background:#f5f5f5;">
-                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #ddd;
-                           font-weight:bold;">Time</th>
-                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #ddd;
-                           font-weight:bold;">Categories</th>
-            </tr>
-            {show_rows}
-        </table>"""
-
-    html = f"""<!doctype html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0;padding:24px;font-family:Arial,Helvetica,sans-serif;
-             font-size:14px;color:#333;background:#fff;">
-    <h2 style="margin:0 0 4px 0;font-size:18px;color:#111;">
-        BMS Alert: {escape(movie_name)}
-    </h2>
-    <p style="margin:0 0 20px 0;font-size:13px;color:#666;">
-        {escape(now_str)}
-    </p>
-    <hr style="border:none;border-top:1px solid #ddd;margin:0 0 20px 0;">
-    {changes_html}
-    <h3 style="margin:0 0 8px 0;font-size:15px;font-weight:bold;color:#333;">
-        Current Showtimes
-    </h3>
-    {shows_html}
-    <p style="margin:24px 0 0 0;font-size:12px;color:#999;">
-        This is an automated alert from BMS Ticket Notifier.
-    </p>
-</body>
-</html>"""
-
-    # Build plain-text version with full show details
     plain_lines = [subject, "", f"Checked at: {now_str}", ""]
     if changes:
         plain_lines.append("Changes Detected:")
@@ -497,26 +405,18 @@ def send_email(subject, changes, shows, movie_info):
     plain_lines.extend(["", "This is an automated alert from BMS Ticket Notifier."])
     plain = "\n".join(plain_lines)
 
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = gmail_user
+    msg["To"] = to
+    msg.attach(MIMEText(plain, "plain"))
+
     try:
-        resp = requests.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": frm, "to": [to],
-                "subject": subject,
-                "text": plain, "html": html,
-            },
-            timeout=15,
-        )
-        if resp.status_code in (200, 201):
-            print(f"  ✅ Email sent to {to}")
-        else:
-            print(f"  ❌ Resend {resp.status_code}: {resp.text}")
-            sys.exit(1)
-    except requests.RequestException as e:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_password)
+            server.sendmail(gmail_user, to, msg.as_string())
+        print(f"  ✅ Email sent to {to}")
+    except Exception as e:
         print(f"  ❌ Email failed: {e}")
         sys.exit(1)
 
@@ -528,7 +428,6 @@ def main():
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now_str}] BMS Ticket Checker — CI mode")
 
-    # Parse config
     parsed = parse_bms_url(CONFIG["url"])
     event_code = parsed["event_code"]
     region_slug = parsed["region_slug"]
@@ -538,11 +437,8 @@ def main():
         print("  ❌ Invalid BMS_URL. Could not extract event/region.")
         sys.exit(1)
 
-    region_code, region_slug_r, lat, lon, geohash = resolve_region(
-        region_slug
-    )
+    region_code, region_slug_r, lat, lon, geohash = resolve_region(region_slug)
 
-    # Determine dates to check
     raw_dates = CONFIG["dates"].strip()
     if raw_dates:
         date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
@@ -551,10 +447,8 @@ def main():
     else:
         date_list = [""]
 
-    print(f"  Event: {event_code}  Region: {region_code}  "
-          f"Dates: {date_list}")
+    print(f"  Event: {event_code}  Region: {region_code}  Dates: {date_list}")
 
-    # Fetch data for each date
     all_shows = []
     all_dates = []
     movie_info = {"name": "Unknown", "language": ""}
@@ -565,10 +459,8 @@ def main():
         if not data:
             print(f"  ⚠️  No data for date {dc or '(default)'}")
             continue
-
         if movie_info["name"] == "Unknown":
             movie_info = parse_movie_info(data)
-
         all_dates.extend(parse_dates(data))
         all_shows.extend(parse_shows(data))
 
@@ -578,7 +470,6 @@ def main():
 
     print(f"  🎬 {movie_info['name']}  {movie_info['language']}")
 
-    # Apply filters
     filtered = filter_shows(
         all_shows,
         CONFIG["theatre"],
@@ -587,7 +478,6 @@ def main():
     )
     print(f"  📊 {len(filtered)} showtime(s) after filters")
 
-    # Build state & detect changes
     new_state = build_state(filtered, all_dates)
     old_state = load_state()
 
@@ -608,7 +498,6 @@ def main():
     else:
         print("  ✅ No changes since last check.")
 
-    # Print current status
     print(f"\n  Current status ({len(filtered)} shows):")
     for s in filtered:
         cats = ", ".join(
