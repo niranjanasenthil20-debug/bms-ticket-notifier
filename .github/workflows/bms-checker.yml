@@ -16,7 +16,7 @@ jobs:
       - name: Setup Python (uv)
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       # Install dependencies directly (no requirements.txt needed)
       - name: Install dependencies
