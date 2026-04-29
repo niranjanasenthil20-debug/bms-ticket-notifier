@@ -2,19 +2,28 @@ name: BMS Ticket Checker
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/30 * * * *'   # runs every 30 minutes
   workflow_dispatch:
 
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Install uv
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python (uv)
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.14"
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv pip install -r requirements.txt
+
+      # 👉 Keep this ONLY if your script uses Playwright
+      - name: Install Playwright browsers
+        run: uv run playwright install chromium
 
       - name: Run BMS Ticket Checker
         env:
@@ -22,6 +31,7 @@ jobs:
           BMS_DATES: ${{ secrets.BMS_DATES }}
           BMS_THEATRE: ${{ secrets.BMS_THEATRE }}
           BMS_TIME: ${{ secrets.BMS_TIME }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}   # used as recipient list
         run: uv run main.py
