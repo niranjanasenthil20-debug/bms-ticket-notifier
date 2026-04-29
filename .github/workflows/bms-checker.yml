@@ -18,10 +18,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      # Install dependencies directly (no requirements.txt needed)
       - name: Install dependencies
-        run: uv pip install -r requirements.txt
+        run: uv pip install playwright requests beautifulsoup4
 
-      # 👉 Keep this ONLY if your script uses Playwright
+      # Required for Playwright
       - name: Install Playwright browsers
         run: uv run playwright install chromium
 
@@ -33,5 +34,5 @@ jobs:
           BMS_TIME: ${{ secrets.BMS_TIME }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}   # used as recipient list
+          RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
         run: uv run main.py
