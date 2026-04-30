@@ -2,29 +2,22 @@ name: BMS Ticket Checker
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # runs every 30 minutes
+    - cron: '*/10 * * * *'
   workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   check-tickets:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python (uv)
-        uses: astral-sh/setup-uv@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.14"
-
-      # Install dependencies directly (no requirements.txt needed)
-      - name: Install dependencies
-        run: uv pip install playwright requests beautifulsoup4
-
-      # Required for Playwright
-      - name: Install Playwright browsers
-        run: uv run playwright install chromium
 
       - name: Run BMS Ticket Checker
         env:
@@ -32,7 +25,8 @@ jobs:
           BMS_DATES: ${{ secrets.BMS_DATES }}
           BMS_THEATRE: ${{ secrets.BMS_THEATRE }}
           BMS_TIME: ${{ secrets.BMS_TIME }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
         run: uv run main.py
