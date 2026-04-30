@@ -233,8 +233,10 @@ def send_email(subject, changes, shows, movie_name):
     raw = RESEND_TO_EMAIL.strip().replace("\n", "").replace("\r", "").replace(" ", "")
     emails = [e for e in raw.split(",") if e]
 
+    print(f"  DEBUG — sender:'{sender}' password_len:{len(password)} emails:{emails}")
+
     if not sender or not password or not emails:
-        print("  ⚠️  Skipping email — credentials not set.")
+        print(f"  ⚠️  Skipping email — sender:{bool(sender)} password:{bool(password)} emails:{bool(emails)}")
         return
 
     now_str = datetime.now().strftime("%d %b %Y, %I:%M %p")
