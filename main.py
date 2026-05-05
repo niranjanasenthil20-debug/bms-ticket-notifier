@@ -15,7 +15,6 @@ CONFIG = {
 GMAIL_USER = os.getenv("GMAIL_USER", "")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 RESEND_TO_EMAIL = os.getenv("RESEND_TO_EMAIL", "")
-STATE_FILE = "bms_state.json"
 
 AVAIL_STATUS_MAP = {
     "0": ("SOLD OUT",    "🔴"),
@@ -158,12 +157,24 @@ def filter_shows(shows):
     kws = [k.strip().lower() for k in theatre.split(",") if k.strip()] if theatre else []
     dates_set = set(d.strip() for d in dates.split(",") if d.strip()) if dates else set()
 
+    now = datetime.now()
+    today_code = now.strftime("%Y%m%d")
+    current_time_code = int(now.strftime("%H%M"))
+
     result = []
     for s in shows:
         if kws and not any(k in s["venue"].lower() for k in kws):
             continue
         if dates_set and s["date"] and s["date"] not in dates_set:
             continue
+        # Skip past shows for today
+        if s["date"] == today_code:
+            try:
+                show_time = int(s["time_code"])
+                if show_time < current_time_code:
+                    continue
+            except:
+                pass
         result.append(s)
     return result
 
@@ -176,16 +187,16 @@ def format_date(date_code):
         return date_code
 
 
-def load_state():
+def load_state(state_key):
     try:
-        with open(STATE_FILE) as f:
+        with open(state_key) as f:
             return json.load(f)
     except:
         return {}
 
 
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
+def save_state(state_key, state):
+    with open(state_key, "w") as f:
         json.dump(state, f, indent=2)
 
 
@@ -348,13 +359,7 @@ def main():
         print(f"  📊 {len(filtered)} showtime(s) after filters")
 
         state_key = f"bms_state_{event_code}.json"
-        old_state = {}
-        try:
-            with open(state_key) as f:
-                old_state = json.load(f)
-        except:
-            pass
-
+        old_state = load_state(state_key)
         new_state = build_state(filtered)
 
         if old_state:
@@ -362,8 +367,7 @@ def main():
         else:
             changes = [f"🧪 Test alert — notifications working for {movie_name}!"]
 
-        with open(state_key, "w") as f:
-            json.dump(new_state, f, indent=2)
+        save_state(state_key, new_state)
 
         if changes:
             print(f"  ⚡ {len(changes)} change(s) detected for {movie_name}")
