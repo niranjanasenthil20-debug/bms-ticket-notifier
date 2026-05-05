@@ -4,23 +4,6 @@ on:
   schedule:
     - cron: '0,10,20,30,40,50 * * * *'
   workflow_dispatch:
-    inputs:
-      bms_url:
-        description: 'BookMyShow URL'
-        required: false
-        default: ''
-      bms_dates:
-        description: 'Dates (YYYYMMDD, comma separated)'
-        required: false
-        default: ''
-      bms_theatre:
-        description: 'Theatre name filter'
-        required: false
-        default: ''
-      bms_time:
-        description: 'Time filter (morning/afternoon/evening/night)'
-        required: false
-        default: ''
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -46,10 +29,10 @@ jobs:
 
       - name: Run BMS Ticket Checker
         env:
-          BMS_URL: ${{ github.event.inputs.bms_url || secrets.BMS_URL }}
-          BMS_DATES: ${{ github.event.inputs.bms_dates || secrets.BMS_DATES }}
-          BMS_THEATRE: ${{ github.event.inputs.bms_theatre || secrets.BMS_THEATRE }}
-          BMS_TIME: ${{ github.event.inputs.bms_time || secrets.BMS_TIME }}
+          BMS_URL: ${{ secrets.BMS_URL }}
+          BMS_DATES: ${{ secrets.BMS_DATES }}
+          BMS_THEATRE: ${{ secrets.BMS_THEATRE }}
+          BMS_TIME: ${{ secrets.BMS_TIME }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
