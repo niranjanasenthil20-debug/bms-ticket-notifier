@@ -220,6 +220,9 @@ def detect_changes(old_state, new_state):
     changes = []
     for key in set(new_state) - set(old_state):
         s = new_state[key]
+        # Only show new available seats
+        if s["status"] == "0":
+            continue
         lbl, ico = AVAIL_STATUS_MAP.get(s["status"], ("AVAILABLE", "🟢"))
         changes.append(
             f"{ico} NEW: {s['venue']} | {s['time']} | {format_date(s['date'])} | "
@@ -227,6 +230,7 @@ def detect_changes(old_state, new_state):
         )
     for key, new_s in new_state.items():
         old_s = old_state.get(key)
+        # Sold out → available
         if old_s and old_s["status"] == "0" and new_s["status"] != "0":
             lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
             changes.append(
@@ -234,6 +238,7 @@ def detect_changes(old_state, new_state):
                 f"{format_date(new_s['date'])} | {new_s['cat']} ₹{new_s['price']} | "
                 f"Seats: {new_s['seats']} | {lbl}"
             )
+        # Seat count changed and still available
         if old_s and old_s.get("seats") != new_s.get("seats") and new_s["status"] != "0":
             lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
             changes.append(
@@ -268,23 +273,28 @@ def send_email(subject, changes, shows, movie_name):
         body += "\n"
 
     body += "═" * 50 + "\n"
-    body += "🎭 ALL CURRENT SHOWTIMES:\n"
+    body += "🎭 AVAILABLE SHOWTIMES:\n"
     body += "═" * 50 + "\n"
 
     date_groups = {}
     for s in shows:
-        date_groups.setdefault(s["date"], {}).setdefault(s["venue"], []).append(s)
+        # Only show available seats
+        if s["status"] != "0":
+            date_groups.setdefault(s["date"], {}).setdefault(s["venue"], []).append(s)
 
-    for date_code in sorted(date_groups.keys()):
-        body += f"\n📅 {format_date(date_code)}\n"
-        body += "-" * 40 + "\n"
-        for vname, vshows in date_groups[date_code].items():
-            body += f"\n  🎦 {vname}\n"
-            for s in vshows:
-                lbl, ico = AVAIL_STATUS_MAP.get(s["status"], ("UNKNOWN", "⚪"))
-                fmt = f" [{s['screen']}]" if s["screen"] else ""
-                seats_info = f" | Seats: {s['seats']}" if s["seats"] != "N/A" else ""
-                body += f"    {ico} {s['time']}{fmt} — {s['cat']} ₹{s['price']}{seats_info} ({lbl})\n"
+    if date_groups:
+        for date_code in sorted(date_groups.keys()):
+            body += f"\n📅 {format_date(date_code)}\n"
+            body += "-" * 40 + "\n"
+            for vname, vshows in date_groups[date_code].items():
+                body += f"\n  🎦 {vname}\n"
+                for s in vshows:
+                    lbl, ico = AVAIL_STATUS_MAP.get(s["status"], ("UNKNOWN", "⚪"))
+                    fmt = f" [{s['screen']}]" if s["screen"] else ""
+                    seats_info = f" | Seats: {s['seats']}" if s["seats"] != "N/A" else ""
+                    body += f"    {ico} {s['time']}{fmt} — {s['cat']} ₹{s['price']}{seats_info} ({lbl})\n"
+    else:
+        body += "\n  No available seats found.\n"
 
     body += "\n" + "═" * 50 + "\n"
     body += "This is an automated alert from BMS Ticket Notifier.\n"
@@ -362,11 +372,20 @@ def main():
         old_state = load_state(state_key)
         new_state = build_state(filtered)
 
-        if old_state:
+        # Check if old state is stale (from a previous day)
+        old_state_date = old_state.get("_date", "")
+        today_str = date.today().strftime("%Y%m%d")
+
+        if old_state and old_state_date == today_str:
+            # Same day — compare normally
             changes = detect_changes(old_state, new_state)
         else:
-            changes = [f"🧪 Test alert — notifications working for {movie_name}!"]
+            # New day or first run — reset state, no email
+            print(f"  🔄 New day detected — resetting state for {movie_name}")
+            changes = []
 
+        # Save state with today's date stamp
+        new_state["_date"] = today_str
         save_state(state_key, new_state)
 
         if changes:
