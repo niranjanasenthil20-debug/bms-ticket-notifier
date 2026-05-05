@@ -321,12 +321,18 @@ def main():
         region_code, region_slug_r, lat, lon, geohash = resolve_region(region_slug)
 
         raw_dates = CONFIG["dates"].strip()
-        if raw_dates:
-            date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
-        elif url_date:
-            date_list = [url_date]
-        else:
-            date_list = [""]
+if raw_dates:
+    date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
+else:
+    # Auto calculate today and tomorrow
+    from datetime import date, timedelta
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    date_list = [
+        today.strftime("%Y%m%d"),
+        tomorrow.strftime("%Y%m%d"),
+    ]
+    print(f"  Auto dates: {date_list}")
 
         print(f"\n  🎬 Movie: {movie_name}")
         print(f"  Event: {event_code}  Region: {region_code}  Dates: {date_list}")
