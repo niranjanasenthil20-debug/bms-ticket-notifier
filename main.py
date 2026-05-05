@@ -24,13 +24,6 @@ AVAIL_STATUS_MAP = {
     "3": ("AVAILABLE",   "🟢"),
 }
 
-TIME_PERIODS = {
-    "morning":   (600, 1200),
-    "afternoon": (1200, 1600),
-    "evening":   (1600, 1900),
-    "night":     (1900, 2400),
-}
-
 REGION_MAP = {
     "chennai":   ("CHEN",   "chennai",   "13.056", "80.206", "tf3"),
     "mumbai":    ("MUMBAI", "mumbai",    "19.076", "72.878", "te7"),
@@ -140,6 +133,7 @@ def parse_shows(data):
                     time = st.get("title", "")
                     time_code = sa.get("showTimeCode", "")
                     screen_attr = st.get("screenAttr", "") or sa.get("attributes", "")
+                    seats_avail = sa.get("seatsAvailable", "")
                     for cat in sa.get("categories", []):
                         ca = str(cat.get("availStatus", ""))
                         shows.append({
@@ -152,17 +146,16 @@ def parse_shows(data):
                             "cat": cat.get("priceDesc", ""),
                             "price": cat.get("curPrice", "0"),
                             "status": ca,
+                            "seats": str(cat.get("seatsAvailable", seats_avail or "N/A")),
                         })
     return shows
 
 
 def filter_shows(shows):
     theatre = CONFIG["theatre"]
-    time_period = CONFIG["time_period"]
     dates = CONFIG["dates"]
 
     kws = [k.strip().lower() for k in theatre.split(",") if k.strip()] if theatre else []
-    periods = [p.strip().lower() for p in time_period.split(",") if p.strip()] if time_period else []
     dates_set = set(d.strip() for d in dates.split(",") if d.strip()) if dates else set()
 
     result = []
@@ -171,15 +164,16 @@ def filter_shows(shows):
             continue
         if dates_set and s["date"] and s["date"] not in dates_set:
             continue
-        if periods:
-            try:
-                tc = int(s["time_code"])
-            except:
-                tc = 0
-            if not any(TIME_PERIODS[p][0] <= tc < TIME_PERIODS[p][1] for p in periods if p in TIME_PERIODS):
-                continue
         result.append(s)
     return result
+
+
+def format_date(date_code):
+    try:
+        dt = datetime.strptime(str(date_code), "%Y%m%d")
+        return dt.strftime("%d %b %Y (%A)")
+    except:
+        return date_code
 
 
 def load_state():
@@ -206,6 +200,7 @@ def build_state(shows):
             "cat": s["cat"],
             "price": s["price"],
             "status": s["status"],
+            "seats": s["seats"],
         }
     return state
 
@@ -214,15 +209,27 @@ def detect_changes(old_state, new_state):
     changes = []
     for key in set(new_state) - set(old_state):
         s = new_state[key]
+        lbl, ico = AVAIL_STATUS_MAP.get(s["status"], ("AVAILABLE", "🟢"))
         changes.append(
-            f"🆕 NEW: {s['venue']} {s['time']} [{s['date']}] — {s['cat']} ₹{s['price']}"
+            f"{ico} NEW: {s['venue']} | {s['time']} | {format_date(s['date'])} | "
+            f"{s['cat']} ₹{s['price']} | Seats: {s['seats']} | {lbl}"
         )
     for key, new_s in new_state.items():
         old_s = old_state.get(key)
         if old_s and old_s["status"] == "0" and new_s["status"] != "0":
             lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
             changes.append(
-                f"{ico} SEATS OPEN: {new_s['venue']} {new_s['time']} [{new_s['date']}] — {new_s['cat']} → {lbl}"
+                f"{ico} SEATS OPEN: {new_s['venue']} | {new_s['time']} | "
+                f"{format_date(new_s['date'])} | {new_s['cat']} ₹{new_s['price']} | "
+                f"Seats: {new_s['seats']} | {lbl}"
+            )
+        # Seat count changed
+        if old_s and old_s.get("seats") != new_s.get("seats") and new_s["status"] != "0":
+            lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
+            changes.append(
+                f"🔄 SEATS UPDATED: {new_s['venue']} | {new_s['time']} | "
+                f"{format_date(new_s['date'])} | {new_s['cat']} ₹{new_s['price']} | "
+                f"Seats: {old_s.get('seats', '?')} → {new_s['seats']} | {lbl}"
             )
     return changes
 
@@ -233,8 +240,6 @@ def send_email(subject, changes, shows, movie_name):
     raw = RESEND_TO_EMAIL.strip().replace("\n", "").replace("\r", "").replace(" ", "")
     emails = [e for e in raw.split(",") if e]
 
-    print(f"  DEBUG — sender:'{sender}' password_len:{len(password)} emails:{emails}")
-
     if not sender or not password or not emails:
         print(f"  ⚠️  Skipping email — sender:{bool(sender)} password:{bool(password)} emails:{bool(emails)}")
         return
@@ -242,26 +247,38 @@ def send_email(subject, changes, shows, movie_name):
     now_str = datetime.now().strftime("%d %b %Y, %I:%M %p")
 
     body = f"🎬 Movie: {movie_name}\n"
-    body += f"Checked at: {now_str}\n\n"
+    body += f"📅 Checked at: {now_str}\n\n"
 
     if changes:
-        body += "Changes Detected:\n"
+        body += "═" * 50 + "\n"
+        body += "⚡ CHANGES DETECTED:\n"
+        body += "═" * 50 + "\n"
         for c in changes:
             body += f"  {c}\n"
         body += "\n"
 
-    body += "Current Showtimes:\n"
-    venue_groups = {}
-    for s in shows:
-        venue_groups.setdefault(s["venue"], []).append(s)
-    for vname, vshows in venue_groups.items():
-        body += f"\n{vname}\n"
-        for s in vshows:
-            lbl = AVAIL_STATUS_MAP.get(s["status"], ("UNKNOWN", ""))[0]
-            fmt = f" [{s['screen']}]" if s["screen"] else ""
-            body += f"  {s['time']}{fmt} — {s['cat']} ₹{s['price']} ({lbl})\n"
+    body += "═" * 50 + "\n"
+    body += "🎭 ALL CURRENT SHOWTIMES:\n"
+    body += "═" * 50 + "\n"
 
-    body += "\nThis is an automated alert from BMS Ticket Notifier."
+    # Group by date then venue
+    date_groups = {}
+    for s in shows:
+        date_groups.setdefault(s["date"], {}).setdefault(s["venue"], []).append(s)
+
+    for date_code in sorted(date_groups.keys()):
+        body += f"\n📅 {format_date(date_code)}\n"
+        body += "-" * 40 + "\n"
+        for vname, vshows in date_groups[date_code].items():
+            body += f"\n  🎦 {vname}\n"
+            for s in vshows:
+                lbl, ico = AVAIL_STATUS_MAP.get(s["status"], ("UNKNOWN", "⚪"))
+                fmt = f" [{s['screen']}]" if s["screen"] else ""
+                seats_info = f" | Seats: {s['seats']}" if s["seats"] != "N/A" else ""
+                body += f"    {ico} {s['time']}{fmt} — {s['cat']} ₹{s['price']}{seats_info} ({lbl})\n"
+
+    body += "\n" + "═" * 50 + "\n"
+    body += "This is an automated alert from BMS Ticket Notifier.\n"
 
     for email in emails:
         msg = MIMEMultipart()
@@ -282,69 +299,86 @@ def main():
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now_str}] BMS Ticket Checker — CI mode")
 
-    url = CONFIG["url"]
-    movie_name = extract_movie_name(url)
+    urls = [u.strip() for u in CONFIG["url"].split(",") if u.strip()]
 
-    parsed = parse_bms_url(url)
-    event_code = parsed["event_code"]
-    region_slug = parsed["region_slug"]
-    url_date = parsed.get("date_code", "")
+    all_changes = []
+    all_filtered = []
+    movie_names = []
 
-    if not event_code or not region_slug:
-        print("  ❌ Invalid BMS_URL. Could not extract event/region.")
-        sys.exit(1)
+    for url in urls:
+        movie_name = extract_movie_name(url)
+        movie_names.append(movie_name)
 
-    region_code, region_slug_r, lat, lon, geohash = resolve_region(region_slug)
+        parsed = parse_bms_url(url)
+        event_code = parsed["event_code"]
+        region_slug = parsed["region_slug"]
+        url_date = parsed.get("date_code", "")
 
-    raw_dates = CONFIG["dates"].strip()
-    if raw_dates:
-        date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
-    elif url_date:
-        date_list = [url_date]
-    else:
-        date_list = [""]
-
-    print(f"  Movie: {movie_name}")
-    print(f"  Event: {event_code}  Region: {region_code}  Dates: {date_list}")
-
-    all_shows = []
-    for dc in date_list:
-        data = fetch_bms(event_code, dc, region_code, region_slug_r, lat, lon, geohash)
-        if not data:
-            print(f"  ⚠️  No data for date {dc or '(default)'}")
+        if not event_code or not region_slug:
+            print(f"  ❌ Invalid URL for {movie_name}, skipping.")
             continue
-        all_shows.extend(parse_shows(data))
 
-    if not all_shows:
-        print("  ❌ No showtimes found.")
-        sys.exit(0)
+        region_code, region_slug_r, lat, lon, geohash = resolve_region(region_slug)
 
-    filtered = filter_shows(all_shows)
-    print(f"  📊 {len(filtered)} showtime(s) after filters")
+        raw_dates = CONFIG["dates"].strip()
+        if raw_dates:
+            date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
+        elif url_date:
+            date_list = [url_date]
+        else:
+            date_list = [""]
 
-    new_state = build_state(filtered)
-    old_state = load_state()
+        print(f"\n  🎬 Movie: {movie_name}")
+        print(f"  Event: {event_code}  Region: {region_code}  Dates: {date_list}")
 
-    if old_state:
-        changes = detect_changes(old_state, new_state)
-    else:
-        changes = [f"🧪 Test alert — notifications are working for {movie_name}!"]
+        all_shows = []
+        for dc in date_list:
+            data = fetch_bms(event_code, dc, region_code, region_slug_r, lat, lon, geohash)
+            if not data:
+                print(f"  ⚠️  No data for date {dc or '(default)'}")
+                continue
+            all_shows.extend(parse_shows(data))
 
-    save_state(new_state)
+        if not all_shows:
+            print(f"  ❌ No showtimes found for {movie_name}.")
+            continue
 
-    if changes:
-        print(f"  ⚡ {len(changes)} change(s) detected")
+        filtered = filter_shows(all_shows)
+        print(f"  📊 {len(filtered)} showtime(s) after filters")
+
+        state_key = f"bms_state_{event_code}.json"
+        old_state = {}
+        try:
+            with open(state_key) as f:
+                old_state = json.load(f)
+        except:
+            pass
+
+        new_state = build_state(filtered)
+
+        if old_state:
+            changes = detect_changes(old_state, new_state)
+        else:
+            changes = [f"🧪 Test alert — notifications working for {movie_name}!"]
+
+        with open(state_key, "w") as f:
+            json.dump(new_state, f, indent=2)
+
+        if changes:
+            print(f"  ⚡ {len(changes)} change(s) detected for {movie_name}")
+            for c in changes:
+                all_changes.append(f"[{movie_name}] {c}")
+        else:
+            print(f"  ✅ No changes for {movie_name}.")
+
+        all_filtered.extend(filtered)
+
+    if all_changes:
+        movies_str = " & ".join(movie_names)
         send_email(
-            f"🎟 BMS Alert: {movie_name} — {len(changes)} update(s)",
-            changes, filtered, movie_name
+            f"🎟 BMS Alert: {movies_str} — {len(all_changes)} update(s)",
+            all_changes, all_filtered, movies_str
         )
-    else:
-        print("  ✅ No changes since last run.")
-
-    print(f"\n  Current status ({len(filtered)} shows):")
-    for s in filtered:
-        lbl = AVAIL_STATUS_MAP.get(s["status"], ("UNKNOWN", ""))[0]
-        print(f"    {s['venue']} — {s['time']} [{s['date']}] — {s['cat']} ₹{s['price']} ({lbl})")
 
     print("\n  Done.")
 
