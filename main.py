@@ -1,4 +1,4 @@
-import os, re, sys, json, smtplib
+import os, re, json, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, date, timedelta
@@ -217,35 +217,34 @@ def build_state(shows):
 
 
 def detect_changes(old_state, new_state):
+    """
+    Alert on two cases:
+      1. New show/category not seen before — seats are available (not sold out)
+      2. Previously sold-out show now has seats available again
+    No alert if a show was already available in the last run (no spam).
+    """
     changes = []
-    for key in set(new_state) - set(old_state):
-        s = new_state[key]
-        # Only show new available seats
-        if s["status"] == "0":
-            continue
-        lbl, ico = AVAIL_STATUS_MAP.get(s["status"], ("AVAILABLE", "🟢"))
-        changes.append(
-            f"{ico} NEW: {s['venue']} | {s['time']} | {format_date(s['date'])} | "
-            f"{s['cat']} ₹{s['price']} | Seats: {s['seats']} | {lbl}"
-        )
+
     for key, new_s in new_state.items():
         old_s = old_state.get(key)
-        # Sold out → available
-        if old_s and old_s["status"] == "0" and new_s["status"] != "0":
-            lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
+        lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
+
+        # Case 1: Brand new show appeared with seats available
+        if old_s is None and new_s["status"] != "0":
             changes.append(
-                f"{ico} SEATS OPEN: {new_s['venue']} | {new_s['time']} | "
+                f"{ico} NEW SHOW: {new_s['venue']} | {new_s['time']} | "
                 f"{format_date(new_s['date'])} | {new_s['cat']} ₹{new_s['price']} | "
                 f"Seats: {new_s['seats']} | {lbl}"
             )
-        # Seat count changed and still available
-        if old_s and old_s.get("seats") != new_s.get("seats") and new_s["status"] != "0":
-            lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
+
+        # Case 2: Was sold out before, now seats are available
+        elif old_s and old_s["status"] == "0" and new_s["status"] != "0":
             changes.append(
-                f"🔄 SEATS UPDATED: {new_s['venue']} | {new_s['time']} | "
+                f"{ico} SEATS OPENED: {new_s['venue']} | {new_s['time']} | "
                 f"{format_date(new_s['date'])} | {new_s['cat']} ₹{new_s['price']} | "
-                f"Seats: {old_s.get('seats', '?')} → {new_s['seats']} | {lbl}"
+                f"Seats: {new_s['seats']} | {lbl}"
             )
+
     return changes
 
 
@@ -273,12 +272,11 @@ def send_email(subject, changes, shows, movie_name):
         body += "\n"
 
     body += "═" * 50 + "\n"
-    body += "🎭 AVAILABLE SHOWTIMES:\n"
+    body += "🎭 ALL AVAILABLE SHOWTIMES:\n"
     body += "═" * 50 + "\n"
 
     date_groups = {}
     for s in shows:
-        # Only show available seats
         if s["status"] != "0":
             date_groups.setdefault(s["date"], {}).setdefault(s["venue"], []).append(s)
 
@@ -372,25 +370,15 @@ def main():
         old_state = load_state(state_key)
         new_state = build_state(filtered)
 
-        # Check if old state is stale (from a previous day)
-        old_state_date = old_state.get("_date", "")
-        today_str = date.today().strftime("%Y%m%d")
-
-        if old_state and old_state_date == today_str:
-            # Same day — compare normally
-            changes = detect_changes(old_state, new_state)
-        else:
-            # New day or first run — reset state, no email
-            print(f"  🔄 New day detected — resetting state for {movie_name}")
-            changes = []
-
-        # Save state with today's date stamp
-        new_state["_date"] = today_str
+        # Always compare against persisted state — no daily reset
+        # Ensures we only fire on genuine new or reopened seats
+        changes = detect_changes(old_state, new_state)
         save_state(state_key, new_state)
 
         if changes:
             print(f"  ⚡ {len(changes)} change(s) detected for {movie_name}")
             for c in changes:
+                print(f"    {c}")
                 all_changes.append(f"[{movie_name}] {c}")
         else:
             print(f"  ✅ No changes for {movie_name}.")
