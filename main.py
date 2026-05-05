@@ -1,7 +1,7 @@
 import os, re, sys, json, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from urllib.parse import urlparse
 import requests
 
@@ -223,7 +223,6 @@ def detect_changes(old_state, new_state):
                 f"{format_date(new_s['date'])} | {new_s['cat']} ₹{new_s['price']} | "
                 f"Seats: {new_s['seats']} | {lbl}"
             )
-        # Seat count changed
         if old_s and old_s.get("seats") != new_s.get("seats") and new_s["status"] != "0":
             lbl, ico = AVAIL_STATUS_MAP.get(new_s["status"], ("AVAILABLE", "🟢"))
             changes.append(
@@ -261,7 +260,6 @@ def send_email(subject, changes, shows, movie_name):
     body += "🎭 ALL CURRENT SHOWTIMES:\n"
     body += "═" * 50 + "\n"
 
-    # Group by date then venue
     date_groups = {}
     for s in shows:
         date_groups.setdefault(s["date"], {}).setdefault(s["venue"], []).append(s)
@@ -312,7 +310,6 @@ def main():
         parsed = parse_bms_url(url)
         event_code = parsed["event_code"]
         region_slug = parsed["region_slug"]
-        url_date = parsed.get("date_code", "")
 
         if not event_code or not region_slug:
             print(f"  ❌ Invalid URL for {movie_name}, skipping.")
@@ -321,18 +318,16 @@ def main():
         region_code, region_slug_r, lat, lon, geohash = resolve_region(region_slug)
 
         raw_dates = CONFIG["dates"].strip()
-if raw_dates:
-    date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
-else:
-    # Auto calculate today and tomorrow
-    from datetime import date, timedelta
-    today = date.today()
-    tomorrow = today + timedelta(days=1)
-    date_list = [
-        today.strftime("%Y%m%d"),
-        tomorrow.strftime("%Y%m%d"),
-    ]
-    print(f"  Auto dates: {date_list}")
+        if raw_dates:
+            date_list = [d.strip() for d in raw_dates.split(",") if d.strip()]
+        else:
+            today = date.today()
+            tomorrow = today + timedelta(days=1)
+            date_list = [
+                today.strftime("%Y%m%d"),
+                tomorrow.strftime("%Y%m%d"),
+            ]
+            print(f"  Auto dates: {date_list}")
 
         print(f"\n  🎬 Movie: {movie_name}")
         print(f"  Event: {event_code}  Region: {region_code}  Dates: {date_list}")
