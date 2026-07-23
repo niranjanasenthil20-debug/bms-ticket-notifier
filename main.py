@@ -1,4 +1,4 @@
-import os, re, json, smtplib
+import os, re, json, smtplib, time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, date, timedelta
@@ -74,7 +74,8 @@ def resolve_region(slug):
     return (key.upper()[:6], key, "0", "0", "")
 
 
-def fetch_bms(event_code, date_code, region_code, region_slug, lat, lon, geohash):
+def fetch_bms(event_code, date_code, region_code, region_slug, lat, lon, geohash,
+              max_retries=3, backoff_base=2):
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -102,13 +103,31 @@ def fetch_bms(event_code, date_code, region_code, region_slug, lat, lon, geohash
         "memberId": "", "lsId": "", "subCode": "",
         "lat": lat, "lon": lon,
     }
-    try:
-        resp = requests.get(API_URL, headers=headers, params=params, timeout=15)
-        if resp.status_code == 200:
-            return resp.json()
-        print(f"  HTTP {resp.status_code}")
-    except requests.RequestException as e:
-        print(f"  Request failed: {e}")
+
+    retryable = {403, 429, 500, 502, 503, 504}
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(API_URL, headers=headers, params=params, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+
+            snippet = resp.text[:200].replace("\n", " ") if resp.text else "(empty body)"
+            print(f"  HTTP {resp.status_code} (attempt {attempt}/{max_retries}) — {snippet}")
+
+            if resp.status_code not in retryable or attempt == max_retries:
+                return None
+
+        except requests.RequestException as e:
+            print(f"  Request failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                return None
+
+        # Exponential backoff before retrying (skip sleep after last attempt)
+        if attempt < max_retries:
+            sleep_s = backoff_base ** attempt
+            time.sleep(sleep_s)
+
     return None
 
 
@@ -352,19 +371,29 @@ def main():
         print(f"  Event: {event_code}  Region: {region_code}  Dates: {date_list}")
 
         all_shows = []
+        failed_dates = []
         for dc in date_list:
             data = fetch_bms(event_code, dc, region_code, region_slug_r, lat, lon, geohash)
             if not data:
                 print(f"  ⚠️  No data for date {dc or '(default)'}")
+                failed_dates.append(dc)
                 continue
             all_shows.extend(parse_shows(data))
+
+        if failed_dates:
+            print(f"  ⚠️  {len(failed_dates)}/{len(date_list)} date fetch(es) failed: {failed_dates}")
 
         if not all_shows:
             print(f"  ❌ No showtimes found for {movie_name}.")
             continue
 
         filtered = filter_shows(all_shows)
-        print(f"  📊 {len(filtered)} showtime(s) after filters")
+        if filtered:
+            print(f"  📊 {len(filtered)} showtime(s) after filters (from {len(all_shows)} raw)")
+        elif all_shows:
+            print(f"  📊 0 showtime(s) after filters — {len(all_shows)} raw show(s) found but none matched BMS_THEATRE/BMS_DATES")
+        else:
+            print(f"  📊 0 showtime(s) after filters")
 
         state_key = f"bms_state_{event_code}.json"
         old_state = load_state(state_key)
